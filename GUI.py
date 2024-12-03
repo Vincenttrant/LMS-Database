@@ -25,10 +25,16 @@ def show_add_book_frame():
     hide_all_frames()
     add_book_frame.pack(pady=10)
 
+def show_loan_copies_frame():
+    hide_all_frames()
+    loaned_copies_frame.pack(pady=10)
+
 def hide_all_frames():
     checkout_frame.pack_forget()
     add_borrower_frame.pack_forget()
     add_book_frame.pack_forget()
+    loaned_copies_frame.pack_forget()
+
 
 def CheckOutBookBTN():
     submit_conn = sqlite3.connect('project2.db')
@@ -38,31 +44,48 @@ def CheckOutBookBTN():
     date_out = datetime.now().date()
     due_date = date_out + timedelta(days=30)
 
-    # Insert data into BOOK_LOANS table (Trigger will handle BOOK_COPIES update)
-    submit_cur.execute(
-        """
-        INSERT INTO BOOK_LOANS (book_id, branch_id, card_no, date_out, due_date, returned_date)
-        VALUES (?, ?, ?, ?, ?, NULL)
-        """,
-        (book_id.get(), branch_id.get(), card_no.get(), date_out, due_date)
-    )
+    # print("Book ID: ", book_id.get())
+    # print("Branch ID: ", branch_id.get())
+    # print("Card No: ", card_no.get())
 
-    # Fetch the updated row from BOOK_COPIES
-    submit_cur.execute(
-        """
-        SELECT book_id, branch_id, no_of_copies
-        FROM BOOK_COPIES
-        WHERE book_id = ? AND branch_id = ?
-        """,
-        (book_id.get(), branch_id.get())
-    )
+    try:
+        # Insert data into BOOK_LOANS table
+        submit_cur.execute(
+            """
+            INSERT INTO BOOK_LOANS (book_id, branch_id, card_no, date_out, due_date, returned_date)
+            VALUES (?, ?, ?, ?, ?, NULL)
+            """,
+            (book_id.get(), branch_id.get(), card_no.get(), date_out, due_date)
+        )
 
-    # Commit transaction
-    submit_conn.commit()
+        # Decrement the number of copies in BOOK_COPIES
+        submit_cur.execute(
+            """
+            UPDATE BOOK_COPIES
+            SET no_of_copies = no_of_copies - 1
+            WHERE book_id = ? AND branch_id = ? AND no_of_copies > 0
+            """,
+            (book_id.get(), branch_id.get())
+        )
 
-    showBookCopies()
+        # print to console BOOK_COPIES
+        
 
-    submit_conn.close()
+        # Check if the update was successful
+        if submit_cur.rowcount == 0:
+            raise Exception("No copies available for this book at the selected branch.")
+
+        submit_conn.commit()
+        submit_cur.execute("SELECT * FROM BOOK_COPIES")
+
+        print("Book checked out successfully.")
+
+    except Exception as e:
+        print(f"Error: {e}")
+        submit_conn.rollback()
+    finally:
+        showBookCopies()
+        submit_conn.close()
 
 # Display BOOK_COPIES data
 def showBookCopies():
@@ -160,10 +183,71 @@ def AddBookBTN():
     book_id.delete(0, END)
     book_title.delete(0, END)
 
+
+
+# Function to list copies loaned out per branch for a given book title
+def listCopiesLoaned():
+    # Clear only the Treeview content without destroying other widgets
+    for widget in loaned_copies_frame.winfo_children():
+        if isinstance(widget, ttk.Treeview):
+            widget.delete(*widget.get_children())  # Clear the Treeview
+
+    conn = sqlite3.connect('project2.db')
+    cur = conn.cursor()
+
+    # Fetch the book title, branch id, and copies available
+    try:
+        cur.execute(
+            """
+            SELECT B.title, C.branch_id, C.no_of_copies
+            FROM BOOK B
+            JOIN BOOK_COPIES C ON B.book_id = C.book_id
+            WHERE B.title = ?
+            GROUP BY B.title
+            """,
+            (book_title_search.get(),)
+        )
+    except sqlite3.ProgrammingError as e:
+        print("SQL Error:", e)
+
+    rows = cur.fetchall()
+
+    # Check if a Treeview already exists; if not, create one
+    existing_tree = None
+    for widget in loaned_copies_frame.winfo_children():
+        if isinstance(widget, ttk.Treeview):
+            existing_tree = widget
+            break
+
+    if not existing_tree:
+        # Create Treeview widget if it doesn't exist
+        tree = ttk.Treeview(loaned_copies_frame, columns=("title", "branch_id", "copies_available"), show="headings", height=10)
+        tree.grid(row=2, column=0, columnspan=2, pady=10)
+
+        # Define column headings
+        tree.heading("title", text="Book Title")
+        tree.heading("branch_id", text="Branch ID")
+        tree.heading("copies_available", text="Copies Available")
+
+        # Set column widths
+        tree.column("title", anchor=W, width=200)
+        tree.column("branch_id", anchor=CENTER, width=100)
+        tree.column("copies_available", anchor=CENTER, width=150)
+    else:
+        tree = existing_tree
+
+    # Insert rows into the Treeview
+    for row in rows:
+        tree.insert("", "end", values=row)
+
+    conn.close()
+
+
 # Frames for different actions
 checkout_frame = Frame(root)
 add_borrower_frame = Frame(root)
 add_book_frame = Frame(root)
+loaned_copies_frame = Frame(root)
 
 # Checkout frame inputs
 Label(checkout_frame, text="Book ID").grid(row=0, column=0, padx=10, pady=5)
@@ -217,9 +301,19 @@ author_name.grid(row=3, column=1, padx=10, pady=5)
 Button(add_book_frame, text="Submit New Book", command=AddBookBTN).grid(row=4, column=0, columnspan=2, pady=10)
 
 
+# Add Loaned Copies Search inputs
+Label(loaned_copies_frame, text="Book Title").grid(row=0, column=0, padx=10, pady=5)
+book_title_search = Entry(loaned_copies_frame, width=30)
+book_title_search.grid(row=0, column=1, padx=10, pady=5)
+
+Button(loaned_copies_frame, text="Search Copies Loaned", command=listCopiesLoaned).grid(row=1, column=0, columnspan=2, pady=10)
+
+
 # Navigation buttons
 Button(root, text="Check Out Book", command=show_checkout_frame).pack(pady=5)
 Button(root, text="Add Borrower", command=show_add_borrower_frame).pack(pady=5)
 Button(root, text="Add Book", command=show_add_book_frame).pack(pady=5)
+Button(root, text="List Copies Loaned Out", command=show_loan_copies_frame).pack(pady=5)
+
 
 root.mainloop()
